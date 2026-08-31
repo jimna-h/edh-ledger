@@ -9,16 +9,16 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg: #12100e;
-    --panel: #1b1713;
-    --panel-raised: #221d18;
-    --hairline: #38322a;
-    --hairline-soft: #2a251f;
-    --ink: #ece5d6;
-    --ink-dim: #a89c87;
-    --ink-faint: #726757;
-    --gold: #c39a4a;
-    --gold-dim: #8c7238;
+    --bg: #131316;
+    --panel: #1c1c20;
+    --panel-raised: #232327;
+    --hairline: #38383e;
+    --hairline-soft: #29292e;
+    --ink: #eae8e4;
+    --ink-dim: #9c9a98;
+    --ink-faint: #6c6a68;
+    --gold: #d6a53d;
+    --gold-dim: #9c7a2e;
     --danger: #c1503f;
     --w: #e8dfc4;
     --u: #4f8fc4;
@@ -54,6 +54,10 @@
     display:flex; align-items: baseline; justify-content: space-between;
     gap: 24px; flex-wrap: wrap;
   }
+  .brand-row{ display:flex; align-items:baseline; gap: 10px; }
+  .brand-dots{ display:flex; gap: 4px; transform: translateY(-2px); }
+  .brand-dots .pip{ width: 8px; height: 8px; }
+
   .masthead h1{
     font-family: 'Fraunces', serif;
     font-optical-sizing: auto;
@@ -119,6 +123,14 @@
   button.small{ padding: 4px 9px; font-size: 11.5px; }
   button:disabled{ opacity: .45; cursor: default; }
   button:disabled:hover{ border-color: var(--hairline); color: var(--ink); }
+
+  .file-btn{
+    font-family: 'Inter Tight', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: var(--radius); border: 1px solid var(--hairline); background: var(--panel-raised);
+    color: var(--ink); padding: 8px 14px; display:inline-flex; align-items:center;
+    transition: border-color .12s ease, color .12s ease;
+  }
+  .file-btn:hover{ border-color: var(--gold-dim); color: var(--gold); }
 
   .deck-list{ margin-top: 14px; display:flex; flex-direction:column; gap:8px; }
   .deck-row{
@@ -224,6 +236,18 @@
   .empty-state{ padding: 60px 20px; text-align: center; color: var(--ink-faint); font-size: 14px; }
   .empty-state .big{ font-family: 'Fraunces', serif; font-size: 20px; color: var(--ink-dim); margin-bottom: 8px; }
 
+  .muted-sm{ font-size: 12px; color: var(--ink-faint); }
+  .dd-empty{ font-size:12px; color:var(--ink-faint); padding:6px 2px; }
+
+  .inline-details{ margin-top: 12px; }
+  .inline-details > summary{
+    cursor: pointer; font-size: 12.5px; font-weight: 600; color: var(--ink-dim); list-style: none;
+  }
+  .inline-details > summary::-webkit-details-marker{ display:none; }
+  .inline-details > summary:hover{ color: var(--gold); }
+  .inline-details > p{ margin-top: 10px; }
+  .inline-details textarea{ margin-top: 6px; }
+
   .bookmarklet-btn{
     display:inline-flex; align-items:center; gap:7px;
     background: var(--gold-dim); color:#16130f; border: 1px solid var(--gold-dim);
@@ -245,7 +269,10 @@
 
   <header class="masthead">
     <div>
-      <h1>Ledger</h1>
+      <div class="brand-row">
+        <h1>Ledger</h1>
+        <div class="brand-dots"><span class="pip w"></span><span class="pip u"></span><span class="pip b"></span><span class="pip r"></span><span class="pip g"></span></div>
+      </div>
       <div class="tagline">a cross-deck card index for Archidekt commander decks</div>
     </div>
     <div class="summary" id="headerSummary">No decks loaded yet.</div>
@@ -260,31 +287,33 @@
         <div class="chev"></div>
       </div>
       <div class="panel-body">
-        <p>Drag this button to your bookmarks bar, once. Then, on any Archidekt deck page, click it — it reads the deck using your own browser session (so nothing gets blocked) and adds it here automatically.</p>
+        <p>Drag to your bookmarks bar. On any Archidekt deck page, click it to add that deck here.</p>
         <div class="row gap-top">
           <a id="bookmarkletLink" href="javascript:void(0)" class="bookmarklet-btn" draggable="true">📥 Add to Ledger</a>
-          <span style="font-size:12px; color: var(--ink-faint);">↖ drag, don't click</span>
         </div>
-        <p style="margin-top:14px;">If your browser hides the bookmarks bar, or drag-and-drop doesn't work: create a new bookmark by hand (name it anything) and paste this as the URL —</p>
-        <textarea id="bookmarkletCode" readonly style="min-height:56px; font-size:11.5px;" onclick="this.select()"></textarea>
+        <details class="inline-details">
+          <summary>Can't drag it?</summary>
+          <p>Create a bookmark by hand and paste this as its URL:</p>
+          <textarea id="bookmarkletCode" readonly onclick="this.select()"></textarea>
+        </details>
       </div>
     </section>
 
     <!-- Deck manager -->
     <section class="panel collapsed" id="managerPanel">
       <div class="panel-head" id="managerToggle">
-        <h2>Paste a decklist instead <span class="hint">fallback for when the bookmarklet isn't handy</span></h2>
+        <h2>Paste a decklist instead <span class="hint">manual fallback</span></h2>
         <div class="chev"></div>
       </div>
       <div class="panel-body">
-        <p>On the deck's Archidekt page, open <strong>More → Export</strong>, choose the <strong>Text</strong> format, and copy the result — a line per card, like <code>1 Sol Ring [ramp]</code>. Paste it below. Card type, color identity, and mana value are looked up automatically from Scryfall's public database. A plain list of quantities and names (no brackets) works too — you'll just lose category tags and the commander star.</p>
+        <p>Export the deck as Text (<strong>More → Export</strong>) and paste it below — one line per card, like <code>1 Sol Ring [ramp]</code>. Type, color, and mana value are filled in from Scryfall automatically.</p>
         <div class="row gap-top">
           <input type="text" id="deckName" placeholder="Deck name (e.g. Sash and Waistcoat)">
         </div>
         <textarea id="deckText" style="margin-top:8px;" placeholder="1 Sol Ring [ramp]&#10;1 Sash and Waistcoat, Unmen [Commander]&#10;36 Island [Land]&#10;…"></textarea>
         <div class="row gap-top">
           <button class="primary" id="addDeckBtn">Parse &amp; add</button>
-          <span id="managerStatus" style="font-size:12px; color: var(--ink-faint);"></span>
+          <span id="managerStatus" class="muted-sm"></span>
         </div>
       </div>
     </section>
@@ -300,11 +329,35 @@
       </div>
     </section>
 
+    <!-- Backup & share: combine ledgers across a playgroup -->
+    <section class="panel collapsed" id="sharePanel">
+      <div class="panel-head" id="shareToggle">
+        <h2>Backup &amp; share <span class="hint">combine with your playgroup</span></h2>
+        <div class="chev"></div>
+      </div>
+      <div class="panel-body">
+        <p>Export your whole ledger as a file to back it up or send to a friend. Import someone else's to merge their decks into this same table.</p>
+        <div class="row gap-top">
+          <button class="primary" id="exportLedgerBtn">Export ledger</button>
+          <label class="file-btn">Choose file…<input type="file" id="importLedgerFile" accept="application/json,.json" hidden></label>
+        </div>
+        <label class="check-inline" style="padding-left:0;"><input type="checkbox" id="importOverwrite"> Overwrite decks I already have</label>
+        <details class="inline-details">
+          <summary>Or paste JSON directly</summary>
+          <textarea id="importLedgerText" placeholder="Paste an exported ledger file's contents here…"></textarea>
+          <div class="row gap-top">
+            <button id="importLedgerBtn">Import</button>
+          </div>
+        </details>
+        <div id="importStatus" class="muted-sm" style="margin-top:8px;"></div>
+      </div>
+    </section>
+
     <!-- Filters -->
     <section class="panel" id="filterPanel">
       <div class="filter-bar">
         <div class="search-field">
-          <input type="text" id="searchInput" placeholder="Search card names…">
+          <input type="text" id="searchInput" placeholder="Search cards…">
         </div>
 
         <div class="color-toggles" id="colorToggles" title="Filter by color identity"></div>
@@ -315,7 +368,7 @@
         </details>
 
         <div class="subtype-field">
-          <input type="text" id="subtypeInput" placeholder="Subtype contains… (e.g. Bird)">
+          <input type="text" id="subtypeInput" placeholder="Subtype (e.g. Bird)">
         </div>
 
         <details class="dd" id="categoryDD">
@@ -362,7 +415,7 @@
   </main>
 
   <footer>
-    Card details are looked up from Scryfall's public API and cached in your browser. Deck lists live in localStorage only — nothing is sent anywhere but Scryfall.
+    Card details come from Scryfall's public API, cached in your browser. Deck lists live in localStorage — nothing leaves your device except to Scryfall.
   </footer>
 
 </div>
@@ -867,6 +920,87 @@
   }
 
   /* ============================================================
+     BACKUP & SHARE (export/import a whole ledger as JSON)
+  ============================================================ */
+  function exportLedgerPayload(){
+    return {
+      app: 'ledger', version: 1, exportedAt: new Date().toISOString(),
+      decks: Array.from(decks.values()).map(d => ({ id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw }))
+    };
+  }
+
+  function downloadLedgerExport(){
+    const payload = exportLedgerPayload();
+    const blob = new Blob([JSON.stringify(payload, null, 1)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ledger-export-${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // Merges another ledger's decks into this one. Existing decks (matched by
+  // id) are skipped unless overwrite is set, so importing a friend's file
+  // never silently clobbers your own fresher data by default.
+  async function importLedgerPayload(payload, overwrite){
+    const list = Array.isArray(payload) ? payload : (payload && Array.isArray(payload.decks) ? payload.decks : null);
+    if (!list) throw new Error("That doesn't look like a Ledger export file.");
+    let added = 0, updated = 0, skipped = 0;
+    for (const entry of list){
+      const raw = entry && (entry.raw !== undefined ? entry.raw : entry.exportText);
+      if (!entry || !entry.id || raw === undefined){ skipped++; continue; }
+      const exists = decks.has(entry.id);
+      if (exists && !overwrite){ skipped++; continue; }
+      try {
+        if (entry.kind === 'archidekt'){
+          addDeckFromArchidektJson(JSON.parse(raw), entry.id, entry.name);
+        } else {
+          await addDeck(entry.name, raw, entry.id);
+        }
+        exists ? updated++ : added++;
+      } catch(e){ skipped++; }
+    }
+    return { added, updated, skipped };
+  }
+
+  async function runLedgerImport(text){
+    const statusEl = document.getElementById('importStatus');
+    try {
+      const payload = JSON.parse(text);
+      statusEl.textContent = 'Importing\u2026';
+      const overwrite = document.getElementById('importOverwrite').checked;
+      const { added, updated, skipped } = await importLedgerPayload(payload, overwrite);
+      const parts = [];
+      if (added) parts.push(`${added} added`);
+      if (updated) parts.push(`${updated} updated`);
+      if (skipped) parts.push(`${skipped} skipped (already had them)`);
+      statusEl.textContent = parts.length ? parts.join(', ') + '.' : 'Nothing new to import.';
+      document.getElementById('importLedgerText').value = '';
+    } catch(e){
+      statusEl.textContent = 'Import failed: ' + ((e && e.message) || e);
+    }
+  }
+
+  document.getElementById('exportLedgerBtn').addEventListener('click', downloadLedgerExport);
+  document.getElementById('importLedgerFile').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    runLedgerImport(await file.text());
+  });
+  document.getElementById('importLedgerBtn').addEventListener('click', () => {
+    const text = document.getElementById('importLedgerText').value;
+    if (!text.trim()){ document.getElementById('importStatus').textContent = 'Paste or choose a file first.'; return; }
+    runLedgerImport(text);
+  });
+  document.getElementById('shareToggle').addEventListener('click', () => {
+    document.getElementById('sharePanel').classList.toggle('collapsed');
+  });
+
+  /* ============================================================
      FILTER BAR UI
   ============================================================ */
   const colorToggles = document.getElementById('colorToggles');
@@ -898,7 +1032,7 @@
 
   function buildCheckboxPanel(panelEl, items, selectedSet, countBadge, onChange){
     if (!items.length){
-      panelEl.innerHTML = `<div style="font-size:12px;color:var(--ink-faint);padding:6px 2px;">Nothing loaded yet</div>`;
+      panelEl.innerHTML = `<div class="dd-empty">Nothing loaded yet</div>`;
       countBadge.style.display = 'none';
       return;
     }
@@ -939,7 +1073,7 @@
     const deckPanel = document.getElementById('deckPanel');
     const deckCountBadge = document.getElementById('deckCount');
     if (!deckItems.length){
-      deckPanel.innerHTML = `<div style="font-size:12px;color:var(--ink-faint);padding:6px 2px;">Nothing loaded yet</div>`;
+      deckPanel.innerHTML = `<div class="dd-empty">Nothing loaded yet</div>`;
       deckCountBadge.style.display = 'none';
     } else {
       deckPanel.innerHTML = deckItems.map(label => {
