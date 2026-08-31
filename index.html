@@ -132,6 +132,11 @@
   }
   .file-btn:hover{ border-color: var(--gold-dim); color: var(--gold); }
 
+  .storage-warning{
+    background: rgba(193,80,63,0.12); border: 1px solid var(--danger); color: var(--danger);
+    font-size: 12.5px; padding: 8px 12px; border-radius: var(--radius); margin-bottom: 10px;
+  }
+
   .deck-list{ margin-top: 14px; display:flex; flex-direction:column; gap:8px; }
   .deck-row{
     display:flex; align-items:center; gap: 12px; padding: 10px 12px;
@@ -308,9 +313,9 @@
       <div class="panel-body">
         <p>Export the deck as Text (<strong>More → Export</strong>) and paste it below — one line per card, like <code>1 Sol Ring [ramp]</code>. Type, color, and mana value are filled in from Scryfall automatically.</p>
         <div class="row gap-top">
-          <input type="text" id="deckName" placeholder="Deck name (e.g. Scrying Life)">
+          <input type="text" id="deckName" placeholder="Deck name (e.g. Sash and Waistcoat)">
         </div>
-        <textarea id="deckText" style="margin-top:8px;" placeholder="1 Sol Ring [ramp]&#10;1 Trelasarra, Moon Dancer [Commander]&#10;1 Haywire Mite [interaction]&#10;…"></textarea>
+        <textarea id="deckText" style="margin-top:8px;" placeholder="1 Sol Ring [ramp]&#10;1 Sash and Waistcoat, Unmen [Commander]&#10;36 Island [Land]&#10;…"></textarea>
         <div class="row gap-top">
           <button class="primary" id="addDeckBtn">Parse &amp; add</button>
           <span id="managerStatus" class="muted-sm"></span>
@@ -325,6 +330,7 @@
         <button class="ghost small" id="clearAllBtn">Remove all</button>
       </div>
       <div class="panel-body" style="padding-top:0;">
+        <div id="storageWarning" class="storage-warning" style="display:none;"></div>
         <div class="deck-list" id="deckList"></div>
       </div>
     </section>
@@ -434,9 +440,32 @@
     try { return JSON.parse(localStorage.getItem(LS_DECKS)) || []; }
     catch(e){ return []; }
   }
+  function setStorageWarning(active, detail){
+    const el = document.getElementById('storageWarning');
+    if (!el) return;
+    if (active){
+      el.style.display = 'block';
+      el.textContent = "Couldn't save to this browser's storage" + (detail ? ` (${detail})` : '') + ' — new or changed decks may not survive a refresh. Try removing a deck or two, or exporting a backup.';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+  // Archidekt's raw card data (prices, legalities, editions, etc.) is large —
+  // easily hundreds of KB per deck — so only the compact, already-normalized
+  // fields are persisted. The full raw JSON stays in memory for the
+  // in-session "view raw JSON" debug toggle, but isn't saved to storage.
   function persistDecks(){
-    const list = Array.from(decks.values()).map(d => ({ id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw }));
-    localStorage.setItem(LS_DECKS, JSON.stringify(list));
+    const list = Array.from(decks.values()).map(d => d.kind === 'archidekt'
+      ? { id: d.id, name: d.name, kind: 'archidekt', commanderNames: d.commanderNames, cards: d.cards }
+      : { id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw });
+    try {
+      localStorage.setItem(LS_DECKS, JSON.stringify(list));
+      setStorageWarning(false);
+      return true;
+    } catch(e){
+      setStorageWarning(true, e && e.name === 'QuotaExceededError' ? 'storage full' : (e && e.message));
+      return false;
+    }
   }
   function loadScryfallCache(){
     try { return JSON.parse(localStorage.getItem(LS_SCRYFALL_CACHE)) || {}; }
@@ -650,6 +679,10 @@
     });
     const commanderNames = cards.filter(c => c.isPremier).map(c => c.name);
     return { name: deckName, commanderNames, cards };
+  }
+
+  function setNormalizedArchidektDeck(id, name, cards, commanderNames){
+    decks.set(id, { id, name: name || 'Untitled deck', commanderNames: commanderNames || [], cards: cards || [], raw: '', showRaw: false, kind: 'archidekt' });
   }
 
   function addDeckFromArchidektJson(data, existingId, overrideName){
@@ -924,8 +957,10 @@
   ============================================================ */
   function exportLedgerPayload(){
     return {
-      app: 'ledger', version: 1, exportedAt: new Date().toISOString(),
-      decks: Array.from(decks.values()).map(d => ({ id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw }))
+      app: 'ledger', version: 2, exportedAt: new Date().toISOString(),
+      decks: Array.from(decks.values()).map(d => d.kind === 'archidekt'
+        ? { id: d.id, name: d.name, kind: 'archidekt', commanderNames: d.commanderNames, cards: d.cards }
+        : { id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw })
     };
   }
 
@@ -950,19 +985,26 @@
     if (!list) throw new Error("That doesn't look like a Ledger export file.");
     let added = 0, updated = 0, skipped = 0;
     for (const entry of list){
-      const raw = entry && (entry.raw !== undefined ? entry.raw : entry.exportText);
-      if (!entry || !entry.id || raw === undefined){ skipped++; continue; }
+      if (!entry || !entry.id){ skipped++; continue; }
       const exists = decks.has(entry.id);
       if (exists && !overwrite){ skipped++; continue; }
       try {
         if (entry.kind === 'archidekt'){
-          addDeckFromArchidektJson(JSON.parse(raw), entry.id, entry.name);
+          if (Array.isArray(entry.cards)){
+            setNormalizedArchidektDeck(entry.id, entry.name, entry.cards, entry.commanderNames);
+          } else if (entry.raw){ // older export format, still has full raw JSON
+            addDeckFromArchidektJson(JSON.parse(entry.raw), entry.id, entry.name);
+          } else { skipped++; continue; }
         } else {
+          const raw = entry.raw !== undefined ? entry.raw : entry.exportText;
+          if (raw === undefined){ skipped++; continue; }
           await addDeck(entry.name, raw, entry.id);
         }
         exists ? updated++ : added++;
       } catch(e){ skipped++; }
     }
+    persistDecks();
+    render();
     return { added, updated, skipped };
   }
 
@@ -1208,11 +1250,17 @@
 
   (async function init(){
     const saved = loadSavedDecks();
-    for (const { id, name, kind, raw, exportText } of saved){
+    for (const entry of saved){
+      const { id, name, kind } = entry;
       if (kind === 'archidekt'){
-        try { addDeckFromArchidektJson(JSON.parse(raw), id, name); } catch(e){ /* corrupt entry, skip */ }
+        if (Array.isArray(entry.cards)){
+          setNormalizedArchidektDeck(id, name, entry.cards, entry.commanderNames);
+        } else if (entry.raw){ // legacy entries saved before compact storage
+          try { addDeckFromArchidektJson(JSON.parse(entry.raw), id, name); } catch(e){ /* corrupt entry, skip */ }
+        }
       } else {
-        await addDeck(name, raw !== undefined ? raw : exportText, id); // exportText: pre-migration key
+        const raw = entry.raw !== undefined ? entry.raw : entry.exportText;
+        if (raw !== undefined) await addDeck(name, raw, id);
       }
     }
     importFromHash();
