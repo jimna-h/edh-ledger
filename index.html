@@ -219,6 +219,56 @@
 
   .raw-toggle{ font-size: 11px; color: var(--ink-faint); text-decoration: underline; cursor:pointer; background:none; border:none; padding:0; font-weight: 400; font-family: 'Inter',sans-serif; }
   .raw-toggle:hover{ color: var(--gold); border:none; }
+  .proxy-settings{
+    margin-top: 16px;
+    border-top: 1px solid var(--hairline-soft);
+    padding-top: 12px;
+  }
+  .proxy-settings > summary{
+    cursor: pointer;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--ink-dim);
+    list-style: none;
+  }
+  .proxy-settings > summary::-webkit-details-marker{ display:none; }
+  .proxy-settings > summary:hover{ color: var(--gold); }
+  .proxy-settings .hint{ font-weight: 400; color: var(--ink-faint); margin-left: 8px; }
+  .proxy-body{ padding: 12px 2px 2px; }
+  .proxy-body input{
+    flex: 1; min-width: 220px;
+    background: var(--bg);
+    border: 1px solid var(--hairline);
+    color: var(--ink);
+    padding: 8px 10px;
+    border-radius: var(--radius);
+    font-size: 13px;
+    font-family: 'Inter', sans-serif;
+  }
+  .proxy-body input:focus{ outline:none; border-color: var(--gold-dim); }
+  .proxy-body p{
+    font-size: 12.5px;
+    color: var(--ink-dim);
+    line-height: 1.6;
+    max-width: 640px;
+  }
+  .proxy-body ol{
+    font-size: 12.5px;
+    color: var(--ink-dim);
+    line-height: 1.7;
+    padding-left: 18px;
+    max-width: 640px;
+  }
+  .proxy-body code{
+    background: var(--bg);
+    border: 1px solid var(--hairline-soft);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11.5px;
+    color: var(--gold);
+  }
+  .proxy-body pre.raw{ max-width: 640px; white-space: pre; user-select: all; }
+
   pre.raw{
     margin-top: 8px;
     max-height: 260px;
@@ -464,6 +514,42 @@
           <span id="managerStatus" style="font-size:12px; color: var(--ink-faint);"></span>
         </div>
         <div class="deck-list" id="deckList"></div>
+
+        <details class="proxy-settings">
+          <summary>Data relay settings <span class="hint">public relays are flaky — set your own for reliability</span></summary>
+          <div class="proxy-body">
+            <div class="row">
+              <input type="text" id="customProxyInput" placeholder="https://your-worker.workers.dev/?url={url}">
+              <button class="small" id="saveProxyBtn">Save</button>
+              <button class="small ghost" id="clearProxyBtn">Clear</button>
+              <span id="proxyStatus" style="font-size:12px; color: var(--ink-faint);"></span>
+            </div>
+            <p>Browsers block this page from calling Archidekt's API directly (CORS), so every request goes through a relay that fetches Archidekt's response and hands it back with permission attached. Public ones (codetabs, allorigins) are used automatically as a fallback, but they rate-limit and go down without notice. A relay you host yourself is instant and free — five minutes on Cloudflare's free tier, no credit card:</p>
+            <ol>
+              <li>Go to <a href="https://dash.cloudflare.com/?to=/:account/workers-and-pages/create/worker" target="_blank" rel="noopener">workers.cloudflare.com</a> and create a Worker (any name).</li>
+              <li>Replace the default code with the snippet below, then click <strong>Deploy</strong>.</li>
+              <li>Copy the worker's URL (looks like <code>https://your-worker.your-name.workers.dev</code>), paste it above as <code>https://your-worker.your-name.workers.dev/?url={url}</code>, and click Save.</li>
+            </ol>
+            <pre class="raw">export default {
+  async fetch(request) {
+    const target = new URL(request.url).searchParams.get('url');
+    if (!target || !target.startsWith('https://archidekt.com/')) {
+      return new Response('Only archidekt.com is allowed', { status: 400 });
+    }
+    const upstream = await fetch(target, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+    const body = await upstream.text();
+    return new Response(body, {
+      status: upstream.status,
+      headers: {
+        'Content-Type': upstream.headers.get('Content-Type') || 'application/json',
+        'Access-Control-Allow-Origin': '*'
+      }
+    });
+  }
+}</pre>
+            <p style="margin-top:-4px;">This worker only ever forwards requests to archidekt.com, so it can't be used as an open proxy for anything else.</p>
+          </div>
+        </details>
       </div>
     </section>
 
@@ -718,14 +804,33 @@
     return m ? m[1] : null;
   }
 
-  // Public CORS relays churn constantly (rate limits, shutdowns, key requirements).
-  // We try several independent ones in order and fall through on any failure.
-  const PROXIES = [
-    { name: 'codetabs',   build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}` },
-    { name: 'corslol',    build: (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
-    { name: 'x2u',        build: (url) => `https://cors.x2u.in/${url}` },
-    { name: 'allorigins', build: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
-  ];
+  // Public CORS relays churn constantly (rate limits, cert issues, shutdowns,
+  // active blocking of proxy traffic). A custom relay the user controls (e.g.
+  // a two-line Cloudflare Worker) is tried first if configured; public relays
+  // are kept only as a fallback for a quick start.
+  const LS_CUSTOM_PROXY = 'ledger.customProxy.v1';
+
+  function loadCustomProxy(){ return localStorage.getItem(LS_CUSTOM_PROXY) || ''; }
+  function saveCustomProxy(tpl){
+    if (tpl) localStorage.setItem(LS_CUSTOM_PROXY, tpl);
+    else localStorage.removeItem(LS_CUSTOM_PROXY);
+  }
+
+  function buildProxyList(){
+    const list = [];
+    const custom = loadCustomProxy();
+    if (custom){
+      list.push({ name: 'your relay', unwrap: 'raw',
+        build: (url) => custom.includes('{url}') ? custom.replace('{url}', encodeURIComponent(url)) : custom + encodeURIComponent(url) });
+    }
+    list.push({ name: 'codetabs', unwrap: 'raw',
+      build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}` });
+    list.push({ name: 'allorigins-raw', unwrap: 'raw',
+      build: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` });
+    list.push({ name: 'allorigins-get', unwrap: 'wrapped',
+      build: (url) => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}` });
+    return list;
+  }
 
   async function fetchWithTimeout(url, ms){
     const controller = new AbortController();
@@ -740,12 +845,12 @@
   async function fetchDeckJson(id){
     const target = `https://archidekt.com/api/decks/${id}/`;
     const attempts = [];
-    for (const proxy of PROXIES){
+    for (const proxy of buildProxyList()){
       try {
         const resp = await fetchWithTimeout(proxy.build(target), 12000);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const text = await resp.text();
-        const data = JSON.parse(text);
+        const data = (proxy.unwrap === 'wrapped') ? JSON.parse(JSON.parse(text).contents) : JSON.parse(text);
         if (data && (data.categories || data.cards || data.name)) return data;
         throw new Error('unexpected response shape');
       } catch(e){
@@ -919,6 +1024,20 @@
     decks.clear();
     persistDeckIds();
     render();
+  });
+
+  const customProxyInput = document.getElementById('customProxyInput');
+  const proxyStatus = document.getElementById('proxyStatus');
+  customProxyInput.value = loadCustomProxy();
+  document.getElementById('saveProxyBtn').addEventListener('click', () => {
+    const val = customProxyInput.value.trim();
+    saveCustomProxy(val);
+    proxyStatus.textContent = val ? 'Saved — new deck loads will use it first.' : '';
+  });
+  document.getElementById('clearProxyBtn').addEventListener('click', () => {
+    customProxyInput.value = '';
+    saveCustomProxy('');
+    proxyStatus.textContent = 'Cleared — back to public relays.';
   });
 
   document.getElementById('managerToggle').addEventListener('click', () => {
