@@ -1073,7 +1073,6 @@
   }
 
   (async function init(){
-    importFromHash();
     const saved = loadSavedDecks();
     for (const { id, name, kind, raw, exportText } of saved){
       if (kind === 'archidekt'){
@@ -1082,6 +1081,7 @@
         await addDeck(name, raw !== undefined ? raw : exportText, id); // exportText: pre-migration key
       }
     }
+    importFromHash();
     if (saved.length){
       document.getElementById('managerPanel').classList.add('collapsed');
     }
@@ -1089,6 +1089,15 @@
     document.getElementById('bookmarkletCode').value = buildBookmarklet();
     render();
   })();
+
+  // The bookmarklet reuses an already-open tab by name; when only the URL's
+  // hash changes on an already-loaded page, browsers don't reload — they
+  // just fire hashchange. Handle that case live instead of requiring a
+  // manual refresh.
+  window.addEventListener('hashchange', () => {
+    importFromHash();
+    render();
+  });
 
   document.getElementById('bookmarkletToggle').addEventListener('click', () => {
     document.getElementById('bookmarkletPanel').classList.toggle('collapsed');
