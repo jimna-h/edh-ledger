@@ -138,7 +138,7 @@
   .panel-body{ padding: 4px 18px 18px; }
 
   /* ---------- Deck manager ---------- */
-  #deckInput{
+  #deckInput, #manualDeckText{
     width:100%;
     min-height: 74px;
     resize: vertical;
@@ -151,8 +151,8 @@
     font-size: 13.5px;
     line-height: 1.5;
   }
-  #deckInput:focus{ outline: none; border-color: var(--gold-dim); }
-  #deckInput::placeholder{ color: var(--ink-faint); }
+  #deckInput:focus, #manualDeckText:focus{ outline: none; border-color: var(--gold-dim); }
+  #deckInput::placeholder, #manualDeckText::placeholder{ color: var(--ink-faint); }
 
   .row{ display:flex; align-items:center; gap: 10px; flex-wrap: wrap; }
   .row.between{ justify-content: space-between; }
@@ -553,7 +553,26 @@
       </div>
     </section>
 
-    <!-- Filters -->
+    <!-- Manual paste-in (bypasses Archidekt fetch entirely) -->
+    <section class="panel" id="pastePanel">
+      <div class="panel-head" id="pasteToggle">
+        <h2>Paste an exported decklist <span class="hint">use this if live loading keeps failing</span></h2>
+        <div class="chev"></div>
+      </div>
+      <div class="panel-body">
+        <p style="font-size:12.5px; color:var(--ink-dim); line-height:1.6; max-width:640px; margin-top:2px;">
+          Archidekt's server appears to challenge/block automated requests (that's why the relays above keep getting HTML instead of JSON — happens even from a dedicated relay). This sidesteps it: on the deck page, open <strong>More → Export</strong>, choose the <strong>Text</strong> format (leave categories on, if offered), copy the result, and paste it below. Card details (type, color, mana value) are then looked up from Scryfall's public API. A bare list of quantities and names works too — you'll just lose category tags and the commander star.
+        </p>
+        <div class="row">
+          <input type="text" id="manualDeckName" placeholder="Deck name (e.g. Sash and Waistcoat)" style="flex:1; min-width:220px; background:var(--bg); border:1px solid var(--hairline); color:var(--ink); padding:8px 10px; border-radius:var(--radius); font-size:13px;">
+        </div>
+        <textarea id="manualDeckText" style="margin-top:8px;" placeholder="1 Sol Ring [ramp]&#10;1 Sash and Waistcoat, Unmen [Commander]&#10;36 Island [Land]&#10;…"></textarea>
+        <div class="row gap-top">
+          <button class="primary" id="addManualBtn">Parse &amp; add</button>
+          <span id="manualStatus" style="font-size:12px; color: var(--ink-faint);"></span>
+        </div>
+      </div>
+    </section>
     <section class="panel" id="filterPanel">
       <div class="filter-bar">
         <div class="search-field">
@@ -794,6 +813,154 @@
   }
 
   /* ============================================================
+     MANUAL DECKS (pasted export + Scryfall enrichment)
+     — bypasses Archidekt's server entirely, for when it's
+       challenging/blocking automated requests.
+  ============================================================ */
+  const LS_MANUAL_DECKS = 'ledger.manualDecks.v1';
+  const LS_SCRYFALL_CACHE = 'ledger.scryfallCache.v1';
+
+  function loadManualDecks(){
+    try { return JSON.parse(localStorage.getItem(LS_MANUAL_DECKS)) || []; }
+    catch(e){ return []; }
+  }
+  function persistManualDecks(){
+    const list = Array.from(decks.values()).filter(d => d.manual).map(d => ({ id: d.id, name: d.name, exportText: d.raw }));
+    localStorage.setItem(LS_MANUAL_DECKS, JSON.stringify(list));
+  }
+  function loadScryfallCache(){
+    try { return JSON.parse(localStorage.getItem(LS_SCRYFALL_CACHE)) || {}; }
+    catch(e){ return {}; }
+  }
+  function saveScryfallCache(){
+    try { localStorage.setItem(LS_SCRYFALL_CACHE, JSON.stringify(scryfallCache)); } catch(e){ /* storage full - ignore */ }
+  }
+  let scryfallCache = loadScryfallCache();
+
+  function isExcludedCategoryName(cat){
+    return /^(maybeboard|sideboard)$/i.test(String(cat).trim());
+  }
+
+  function parseExportText(text){
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const rows = [];
+    for (const line of lines){
+      if (/^(#|\/\/)/.test(line)) continue;
+      const m = line.match(/^(\d+)\s*x?\s+(.*)$/i);
+      if (!m) continue;
+      const quantity = parseInt(m[1], 10) || 1;
+      let rest = m[2];
+      let category = '';
+      const catMatch = rest.match(/\[([^\]]+)\]/);
+      if (catMatch){ category = catMatch[1].split(',')[0].trim(); rest = rest.replace(catMatch[0], ''); }
+      rest = rest.replace(/\^[^^]*\^/g, '');
+      rest = rest.replace(/\*[A-Za-z]+\*/g, '');
+      rest = rest.replace(/\([A-Za-z0-9]{2,6}\)\s*[\w-]*/g, '');
+      rest = rest.trim().replace(/\s{2,}/g, ' ');
+      if (!rest) continue;
+      rows.push({ name: rest, quantity, category });
+    }
+    return rows;
+  }
+
+  function groupExportRows(rows){
+    const byName = new Map();
+    rows.forEach(r => {
+      const key = r.name.toLowerCase();
+      let g = byName.get(key);
+      if (!g){ g = { name: r.name, quantity: r.quantity, categories: new Set() }; byName.set(key, g); }
+      else { g.quantity = Math.max(g.quantity, r.quantity); }
+      if (r.category) g.categories.add(r.category);
+    });
+    return Array.from(byName.values()).map(g => ({ name: g.name, quantity: g.quantity, categories: Array.from(g.categories) }));
+  }
+
+  function cardIncludedFromCategories(categories){
+    if (!categories.length) return true;
+    return categories.some(c => !isExcludedCategoryName(c));
+  }
+
+  async function enrichWithScryfall(names){
+    const FRESH_MS = 1000 * 60 * 60 * 24 * 14; // 2 weeks
+    const now = Date.now();
+    const need = names.filter(n => {
+      const c = scryfallCache[n.toLowerCase()];
+      return !c || (now - c.t) > FRESH_MS;
+    });
+    for (let i = 0; i < need.length; i += 75){
+      const batch = need.slice(i, i + 75);
+      try {
+        const resp = await fetch('https://api.scryfall.com/cards/collection', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifiers: batch.map(n => ({ name: n })) })
+        });
+        const data = await resp.json();
+        (data.data || []).forEach(card => {
+          const key = card.name.toLowerCase();
+          const typeLine = card.type_line || (card.card_faces && card.card_faces[0] && card.card_faces[0].type_line) || '';
+          scryfallCache[key] = {
+            t: now,
+            typeLine,
+            colorIdentity: card.color_identity || [],
+            manaValue: typeof card.cmc === 'number' ? card.cmc : 0,
+          };
+        });
+        (data.not_found || []).forEach(idf => {
+          const key = (idf.name || '').toLowerCase();
+          if (key) scryfallCache[key] = { t: now, typeLine: '', colorIdentity: [], manaValue: 0, notFound: true };
+        });
+      } catch(e){ /* leave uncached for now; row will just show blank type/color */ }
+    }
+    saveScryfallCache();
+  }
+
+  async function addManualDeck(name, exportText, existingId){
+    const rows = parseExportText(exportText);
+    if (!rows.length){
+      document.getElementById('manualStatus').textContent = "Couldn't find any lines that look like \"3 Card Name\" — check the pasted text.";
+      return;
+    }
+    const grouped = groupExportRows(rows);
+    const included = grouped.filter(g => cardIncludedFromCategories(g.categories));
+    const names = Array.from(new Set(included.map(g => g.name)));
+
+    document.getElementById('manualStatus').textContent = `Looking up ${names.length} card${names.length===1?'':'s'} on Scryfall…`;
+    await enrichWithScryfall(names);
+    document.getElementById('manualStatus').textContent = '';
+
+    const cards = included.map(g => {
+      const info = scryfallCache[g.name.toLowerCase()] || { typeLine: '', colorIdentity: [], manaValue: 0 };
+      const { typeLine, types, subTypes } = parseTypeLine({ typeLine: info.typeLine });
+      const isPremier = g.categories.some(c => /^commander$/i.test(c.trim()));
+      return {
+        name: g.name, quantity: g.quantity, typeLine, types, subTypes,
+        colorIdentity: info.colorIdentity, manaValue: info.manaValue,
+        categories: g.categories.filter(c => !isExcludedCategoryName(c)),
+        isPremier
+      };
+    });
+    const commanderNames = cards.filter(c => c.isPremier).map(c => c.name);
+    const id = existingId || ('manual-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    decks.set(id, { id, url: '', name: name || 'Pasted deck', commanderNames, cards, loading: false, error: null, raw: exportText, showRaw: false, manual: true });
+    persistManualDecks();
+    render();
+  }
+
+  document.getElementById('addManualBtn').addEventListener('click', () => {
+    const name = document.getElementById('manualDeckName').value.trim();
+    const text = document.getElementById('manualDeckText').value;
+    if (!text.trim()){ document.getElementById('manualStatus').textContent = 'Paste a decklist first.'; return; }
+    addManualDeck(name, text).then(() => {
+      document.getElementById('manualDeckName').value = '';
+      document.getElementById('manualDeckText').value = '';
+    });
+  });
+  document.getElementById('pasteToggle').addEventListener('click', () => {
+    document.getElementById('pastePanel').classList.toggle('collapsed');
+  });
+
+  /* ============================================================
      FETCHING
   ============================================================ */
   function extractDeckId(input){
@@ -945,21 +1112,28 @@
       else statusHtml = `<span class="status ok">${included} cards</span>`;
 
       const commander = d.commanderNames && d.commanderNames.length ? d.commanderNames.join(' / ') : '—';
+      const rawText = d.manual ? d.raw : (d.raw ? JSON.stringify(d.raw, null, 1) : '');
+      const subLine = d.manual
+        ? `Commander: ${escapeHtml(commander)} · pasted export`
+        : `Commander: ${escapeHtml(commander)} · <a href="${d.url}" target="_blank" rel="noopener">open on Archidekt</a>`;
+      const actionsHtml = d.manual
+        ? `<button class="small" data-action="remove" data-id="${id}">Remove</button>`
+        : `<button class="small" data-action="refresh" data-id="${id}" ${d.loading?'disabled':''}>Refresh</button>
+           <button class="small" data-action="remove" data-id="${id}">Remove</button>`;
 
       return `
       <div class="deck-row ${d.loading ? 'dimmed':''}" data-id="${id}">
         <div class="identity">${colorPipsHtml(Array.from(identity))}</div>
         <div class="meta">
-          <div class="name">${escapeHtml(d.name || d.url)}</div>
-          <div class="sub">Commander: ${escapeHtml(commander)} · <a href="${d.url}" target="_blank" rel="noopener">open on Archidekt</a>
-            ${d.raw ? ` · <button class="raw-toggle" data-action="raw" data-id="${id}">${d.showRaw ? 'hide' : 'view'} raw JSON</button>` : ''}
+          <div class="name">${escapeHtml(d.name || d.url || id)}</div>
+          <div class="sub">${subLine}
+            ${rawText ? ` · <button class="raw-toggle" data-action="raw" data-id="${id}">${d.showRaw ? 'hide' : 'view'} raw ${d.manual?'text':'JSON'}</button>` : ''}
           </div>
-          ${d.showRaw && d.raw ? `<pre class="raw">${escapeHtml(JSON.stringify(d.raw, null, 1)).slice(0,20000)}</pre>` : ''}
+          ${d.showRaw && rawText ? `<pre class="raw">${escapeHtml(rawText).slice(0,20000)}</pre>` : ''}
         </div>
         ${statusHtml}
         <div class="actions">
-          <button class="small" data-action="refresh" data-id="${id}" ${d.loading?'disabled':''}>Refresh</button>
-          <button class="small" data-action="remove" data-id="${id}">Remove</button>
+          ${actionsHtml}
         </div>
       </div>`;
     }).join('');
@@ -977,6 +1151,7 @@
       decks.delete(id);
       clearCache(id);
       persistDeckIds();
+      persistManualDecks();
       render();
     } else if (action === 'raw'){
       const d = decks.get(id);
@@ -986,7 +1161,7 @@
   });
 
   function persistDeckIds(){
-    const list = Array.from(decks.values()).map(d => ({ id: d.id, url: d.url }));
+    const list = Array.from(decks.values()).filter(d => !d.manual).map(d => ({ id: d.id, url: d.url }));
     saveDeckIdList(list);
   }
 
@@ -1023,6 +1198,7 @@
     decks.forEach(d => clearCache(d.id));
     decks.clear();
     persistDeckIds();
+    persistManualDecks();
     render();
   });
 
@@ -1030,7 +1206,12 @@
   const proxyStatus = document.getElementById('proxyStatus');
   customProxyInput.value = loadCustomProxy();
   document.getElementById('saveProxyBtn').addEventListener('click', () => {
-    const val = customProxyInput.value.trim();
+    let val = customProxyInput.value.trim();
+    if (val){
+      if (!/^https?:\/\//i.test(val)) val = 'https://' + val;
+      if (!val.includes('{url}')) val = val.replace(/\/?$/, '') + '/?url={url}';
+    }
+    customProxyInput.value = val;
     saveCustomProxy(val);
     proxyStatus.textContent = val ? 'Saved — new deck loads will use it first.' : '';
   });
@@ -1324,9 +1505,11 @@
     saved.forEach(({id, url}) => {
       decks.set(id, { id, url, name: null, commanderNames: [], cards: [], loading: true, error: null, raw: null, showRaw: false });
     });
+    const savedManual = loadManualDecks();
     render();
     saved.forEach(({id, url}) => loadDeck(id, url, false));
-    if (saved.length){
+    savedManual.forEach(({id, name, exportText}) => addManualDeck(name, exportText, id));
+    if (saved.length || savedManual.length){
       document.getElementById('managerPanel').classList.add('collapsed');
     }
   })();
