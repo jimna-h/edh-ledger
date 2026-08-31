@@ -536,12 +536,15 @@
     const card = entry.card || entry;
     return card.oracleCard || card.oracle_card || card;
   }
+  const COLOR_WORD_TO_CODE = { white: 'W', blue: 'U', black: 'B', red: 'R', green: 'G' };
+  function toColorCode(c){
+    const s = String(c).trim();
+    if (/^[WUBRG]$/i.test(s)) return s.toUpperCase();
+    return COLOR_WORD_TO_CODE[s.toLowerCase()] || null;
+  }
   function parseColorIdentityRaw(cardCore){
-    const ci = pick(cardCore, ['colorIdentity','color_identity']);
-    if (Array.isArray(ci)) return ci.map(c => String(c).toUpperCase());
-    const colors = pick(cardCore, ['colors']);
-    if (Array.isArray(colors)) return colors.map(c => String(c).toUpperCase());
-    return [];
+    const ci = pick(cardCore, ['colorIdentity','color_identity']) || pick(cardCore, ['colors']) || [];
+    return (Array.isArray(ci) ? ci : []).map(toColorCode).filter(Boolean);
   }
   function parseManaValueRaw(cardCore){
     const mv = pick(cardCore, ['cmc','manaValue','mana_value','convertedManaCost']);
@@ -557,9 +560,22 @@
     return [];
   }
 
+  // Deck-level `categories` is a plain array of {name, isPremier, includedInDeck, ...}
+  // objects (not a dictionary), so build a name-keyed lookup from it.
+  function buildCategoryDefs(deckJson){
+    const raw = deckJson.categories;
+    const defs = {};
+    if (Array.isArray(raw)){
+      raw.forEach(c => { if (c && c.name) defs[c.name] = c; });
+    } else if (raw && typeof raw === 'object'){
+      Object.assign(defs, raw);
+    }
+    return defs;
+  }
+
   function normalizeArchidektJson(deckJson){
     const deckName = pick(deckJson, ['name']) || 'Untitled deck';
-    const categoryDefs = deckJson.categories && typeof deckJson.categories === 'object' ? deckJson.categories : {};
+    const categoryDefs = buildCategoryDefs(deckJson);
     function categoryIncluded(name){ const def = categoryDefs[name]; if (!def) return true; return def.includedInDeck !== false; }
     function categoryIsPremier(name){ const def = categoryDefs[name]; return !!(def && def.isPremier); }
 
@@ -585,7 +601,7 @@
 
   function addDeckFromArchidektJson(data, existingId, overrideName){
     const norm = normalizeArchidektJson(data);
-    const id = existingId || ('live-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    const id = existingId || (data && data.id ? 'archidekt-' + data.id : 'live-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
     decks.set(id, {
       id, name: overrideName || norm.name, commanderNames: norm.commanderNames, cards: norm.cards,
       raw: JSON.stringify(data, null, 1), showRaw: false, kind: 'archidekt'
@@ -602,8 +618,10 @@
     try {
       const jsonStr = decodeURIComponent(escape(atob(b64)));
       const data = JSON.parse(jsonStr);
+      const expectedId = data && data.id ? 'archidekt-' + data.id : null;
+      const wasAlreadyLoaded = !!(expectedId && decks.has(expectedId));
       const id = addDeckFromArchidektJson(data);
-      document.getElementById('managerStatus').textContent = `Added "${decks.get(id).name}" from Archidekt.`;
+      document.getElementById('managerStatus').textContent = `${wasAlreadyLoaded ? 'Refreshed' : 'Added'} "${decks.get(id).name}" from Archidekt.`;
     } catch(e){
       document.getElementById('managerStatus').textContent = 'Import failed: ' + ((e && e.message) || e) + ' — try refreshing the deck page and clicking the bookmarklet again.';
     }
