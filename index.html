@@ -224,6 +224,19 @@
   .empty-state{ padding: 60px 20px; text-align: center; color: var(--ink-faint); font-size: 14px; }
   .empty-state .big{ font-family: 'Fraunces', serif; font-size: 20px; color: var(--ink-dim); margin-bottom: 8px; }
 
+  .bookmarklet-btn{
+    display:inline-flex; align-items:center; gap:7px;
+    background: var(--gold-dim); color:#16130f; border: 1px solid var(--gold-dim);
+    font-family: 'Inter Tight', sans-serif; font-weight: 700; font-size: 13px;
+    padding: 9px 16px; border-radius: 20px; text-decoration:none; cursor: grab;
+    user-select: none;
+  }
+  .bookmarklet-btn:hover{ background: var(--gold); border-color: var(--gold); }
+  #bookmarkletCode{
+    width:100%; resize: vertical; background: var(--bg); border: 1px solid var(--hairline); color: var(--ink-dim);
+    border-radius: var(--radius); padding: 8px 10px; font-family: monospace; line-height: 1.5;
+  }
+
   footer{ padding: 18px 32px 32px; color: var(--ink-faint); font-size: 11.5px; text-align: center; }
 </style>
 </head>
@@ -240,10 +253,27 @@
 
   <main>
 
+    <!-- Bookmarklet: one-click add from Archidekt -->
+    <section class="panel" id="bookmarkletPanel">
+      <div class="panel-head" id="bookmarkletToggle">
+        <h2>Add from Archidekt <span class="hint">one click, no exporting</span></h2>
+        <div class="chev"></div>
+      </div>
+      <div class="panel-body">
+        <p>Drag this button to your bookmarks bar, once. Then, on any Archidekt deck page, click it — it reads the deck using your own browser session (so nothing gets blocked) and adds it here automatically.</p>
+        <div class="row gap-top">
+          <a id="bookmarkletLink" href="javascript:void(0)" class="bookmarklet-btn" draggable="true">📥 Add to Ledger</a>
+          <span style="font-size:12px; color: var(--ink-faint);">↖ drag, don't click</span>
+        </div>
+        <p style="margin-top:14px;">If your browser hides the bookmarks bar, or drag-and-drop doesn't work: create a new bookmark by hand (name it anything) and paste this as the URL —</p>
+        <textarea id="bookmarkletCode" readonly style="min-height:56px; font-size:11.5px;" onclick="this.select()"></textarea>
+      </div>
+    </section>
+
     <!-- Deck manager -->
-    <section class="panel" id="managerPanel">
+    <section class="panel collapsed" id="managerPanel">
       <div class="panel-head" id="managerToggle">
-        <h2>Decks <span class="hint" id="managerHint">Paste an exported decklist to begin</span></h2>
+        <h2>Paste a decklist instead <span class="hint">fallback for when the bookmarklet isn't handy</span></h2>
         <div class="chev"></div>
       </div>
       <div class="panel-body">
@@ -254,9 +284,18 @@
         <textarea id="deckText" style="margin-top:8px;" placeholder="1 Sol Ring [ramp]&#10;1 Sash and Waistcoat, Unmen [Commander]&#10;36 Island [Land]&#10;…"></textarea>
         <div class="row gap-top">
           <button class="primary" id="addDeckBtn">Parse &amp; add</button>
-          <button class="ghost" id="clearAllBtn">Remove all</button>
           <span id="managerStatus" style="font-size:12px; color: var(--ink-faint);"></span>
         </div>
+      </div>
+    </section>
+
+    <!-- Loaded decks: always visible, regardless of how they were added -->
+    <section class="panel" id="deckListPanel">
+      <div class="panel-head" style="cursor:default;">
+        <h2>Loaded decks <span class="hint" id="managerHint">nothing yet</span></h2>
+        <button class="ghost small" id="clearAllBtn">Remove all</button>
+      </div>
+      <div class="panel-body" style="padding-top:0;">
         <div class="deck-list" id="deckList"></div>
       </div>
     </section>
@@ -343,7 +382,7 @@
     catch(e){ return []; }
   }
   function persistDecks(){
-    const list = Array.from(decks.values()).map(d => ({ id: d.id, name: d.name, exportText: d.raw }));
+    const list = Array.from(decks.values()).map(d => ({ id: d.id, name: d.name, kind: d.kind || 'export', raw: d.raw }));
     localStorage.setItem(LS_DECKS, JSON.stringify(list));
   }
   function loadScryfallCache(){
@@ -385,11 +424,21 @@
     return undefined;
   }
 
-  // Turns a Scryfall-style type line into { typeLine, types, subTypes }.
-  // Double-faced cards report as "Front type — Front sub // Back type — Back
-  // sub"; each face is parsed separately (splitting only on the em dash, not
-  // any hyphen) and their types/subtypes are unioned.
+  // Turns a Scryfall/Archidekt-style type line into { typeLine, types, subTypes }.
+  // Archidekt's raw card data sometimes gives structured types/subTypes/superTypes
+  // arrays; when it doesn't (or for Scryfall's flat type_line), we parse the
+  // string instead. Double-faced cards report as "Front — sub // Back — sub";
+  // each face is parsed separately (splitting only on the em dash, not any
+  // hyphen) and their types/subtypes are unioned.
   function parseTypeLine(cardCore){
+    const superTypes = pick(cardCore, ['superTypes','super_types']) || [];
+    const types0 = pick(cardCore, ['types']) || [];
+    const subTypes0 = pick(cardCore, ['subTypes','sub_types']) || [];
+    if (types0.length || subTypes0.length || superTypes.length){
+      const left = [...superTypes, ...types0].join(' ');
+      const right = subTypes0.length ? ' — ' + subTypes0.join(' ') : '';
+      return { typeLine: (left + right).trim(), types: types0.map(String), subTypes: subTypes0.map(String) };
+    }
     const flat = pick(cardCore, ['type_line','typeLine','type']) || '';
     if (!flat) return { typeLine: '', types: [], subTypes: [] };
     const faces = flat.split(/\s*\/\/\s*/).filter(Boolean);
@@ -468,7 +517,108 @@
   }
 
   /* ============================================================
-     SCRYFALL ENRICHMENT
+     LIVE IMPORT FROM ARCHIDEKT (via bookmarklet, no proxy needed)
+     The bookmarklet runs on archidekt.com itself, so it's a normal
+     same-origin browser request — nothing to block. It ships the deck's
+     raw JSON here as a base64 URL hash, which we parse directly.
+  ============================================================ */
+  function findCardEntries(deckJson){
+    if (Array.isArray(deckJson.cards)) return deckJson.cards;
+    for (const k of Object.keys(deckJson)){
+      const v = deckJson[k];
+      if (Array.isArray(v) && v.length && typeof v[0] === 'object' && v[0] !== null){
+        if ('quantity' in v[0] || 'card' in v[0]) return v;
+      }
+    }
+    return [];
+  }
+  function getCardCore(entry){
+    const card = entry.card || entry;
+    return card.oracleCard || card.oracle_card || card;
+  }
+  function parseColorIdentityRaw(cardCore){
+    const ci = pick(cardCore, ['colorIdentity','color_identity']);
+    if (Array.isArray(ci)) return ci.map(c => String(c).toUpperCase());
+    const colors = pick(cardCore, ['colors']);
+    if (Array.isArray(colors)) return colors.map(c => String(c).toUpperCase());
+    return [];
+  }
+  function parseManaValueRaw(cardCore){
+    const mv = pick(cardCore, ['cmc','manaValue','mana_value','convertedManaCost']);
+    if (typeof mv === 'number') return mv;
+    if (typeof mv === 'string' && mv.trim() !== '' && !isNaN(Number(mv))) return Number(mv);
+    return 0;
+  }
+  function entryCategoryNames(entry){
+    const cats = pick(entry, ['categories']);
+    if (Array.isArray(cats) && cats.length) return cats.map(String);
+    const singular = pick(entry, ['category']);
+    if (typeof singular === 'string' && singular) return [singular];
+    return [];
+  }
+
+  function normalizeArchidektJson(deckJson){
+    const deckName = pick(deckJson, ['name']) || 'Untitled deck';
+    const categoryDefs = deckJson.categories && typeof deckJson.categories === 'object' ? deckJson.categories : {};
+    function categoryIncluded(name){ const def = categoryDefs[name]; if (!def) return true; return def.includedInDeck !== false; }
+    function categoryIsPremier(name){ const def = categoryDefs[name]; return !!(def && def.isPremier); }
+
+    const entries = findCardEntries(deckJson);
+    const cards = [];
+    entries.forEach(entry => {
+      const catNames = entryCategoryNames(entry);
+      const included = catNames.length === 0 ? true : catNames.some(categoryIncluded);
+      if (!included) return;
+      const core = getCardCore(entry);
+      const name = pick(core, ['name']) || pick(entry, ['name']) || 'Unknown card';
+      const quantity = Number(pick(entry, ['quantity'])) || 1;
+      const { typeLine, types, subTypes } = parseTypeLine(core);
+      const colorIdentity = parseColorIdentityRaw(core);
+      const manaValue = parseManaValueRaw(core);
+      const isPremier = catNames.some(categoryIsPremier);
+      const includedCats = catNames.filter(categoryIncluded);
+      cards.push({ name, quantity, typeLine, types, subTypes, colorIdentity, manaValue, categories: includedCats.length ? includedCats : catNames, isPremier });
+    });
+    const commanderNames = cards.filter(c => c.isPremier).map(c => c.name);
+    return { name: deckName, commanderNames, cards };
+  }
+
+  function addDeckFromArchidektJson(data, existingId, overrideName){
+    const norm = normalizeArchidektJson(data);
+    const id = existingId || ('live-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
+    decks.set(id, {
+      id, name: overrideName || norm.name, commanderNames: norm.commanderNames, cards: norm.cards,
+      raw: JSON.stringify(data, null, 1), showRaw: false, kind: 'archidekt'
+    });
+    persistDecks();
+    render();
+    return id;
+  }
+
+  function importFromHash(){
+    if (!location.hash.startsWith('#import=')) return;
+    const b64 = location.hash.slice('#import='.length);
+    history.replaceState(null, '', location.pathname + location.search);
+    try {
+      const jsonStr = decodeURIComponent(escape(atob(b64)));
+      const data = JSON.parse(jsonStr);
+      const id = addDeckFromArchidektJson(data);
+      document.getElementById('managerStatus').textContent = `Added "${decks.get(id).name}" from Archidekt.`;
+    } catch(e){
+      document.getElementById('managerStatus').textContent = 'Import failed: ' + ((e && e.message) || e) + ' — try refreshing the deck page and clicking the bookmarklet again.';
+    }
+  }
+
+  // Build the bookmarklet's javascript: URI, targeting wherever this page
+  // is actually hosted (so it works regardless of the deployed URL).
+  function buildBookmarklet(){
+    const targetUrl = location.origin + location.pathname;
+    const src = `(function(){try{var m=location.pathname.match(/\\/decks\\/(\\d+)/);if(!m){alert('Open a specific deck page first.');return;}var id=m[1];fetch('/api/decks/'+id+'/',{credentials:'include'}).then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.text();}).then(function(t){JSON.parse(t);var b64=btoa(unescape(encodeURIComponent(t)));window.open(${JSON.stringify(targetUrl)}+'#import='+b64,'ledgerTab');}).catch(function(e){alert('Ledger: could not read this deck ('+e.message+'). Try the paste-export method instead.');});}catch(e){alert('Ledger bookmarklet error: '+e.message);}})();`;
+    return 'javascript:' + encodeURIComponent(src);
+  }
+
+  /* ============================================================
+     MANUAL PASTE-EXPORT PIPELINE (fallback: Scryfall enrichment)
   ============================================================ */
   async function enrichWithScryfall(names){
     const FRESH_MS = 1000 * 60 * 60 * 24 * 14; // 2 weeks
@@ -565,7 +715,7 @@
     });
     const commanderNames = cards.filter(c => c.isPremier).map(c => c.name);
     const id = existingId || ('deck-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7));
-    decks.set(id, { id, name: name || 'Untitled deck', commanderNames, cards, raw: exportText, showRaw: false });
+    decks.set(id, { id, name: name || 'Untitled deck', commanderNames, cards, raw: exportText, showRaw: false, kind: 'export' });
     persistDecks();
     render();
   }
@@ -632,7 +782,7 @@
         <div class="meta">
           <div class="name">${escapeHtml(d.name)}</div>
           <div class="sub">Commander: ${escapeHtml(commander)}
-            ${d.raw ? ` · <button class="raw-toggle" data-action="raw" data-id="${id}">${d.showRaw ? 'hide' : 'view'} pasted text</button>` : ''}
+            ${d.raw ? ` · <button class="raw-toggle" data-action="raw" data-id="${id}">${d.showRaw ? 'hide' : 'view'} ${d.kind === 'archidekt' ? 'raw JSON' : 'pasted text'}</button>` : ''}
           </div>
           ${d.showRaw ? `<pre class="raw">${escapeHtml(d.raw).slice(0,20000)}</pre>` : ''}
         </div>
@@ -905,15 +1055,26 @@
   }
 
   (async function init(){
+    importFromHash();
     const saved = loadSavedDecks();
-    for (const { id, name, exportText } of saved){
-      await addDeck(name, exportText, id);
+    for (const { id, name, kind, raw, exportText } of saved){
+      if (kind === 'archidekt'){
+        try { addDeckFromArchidektJson(JSON.parse(raw), id, name); } catch(e){ /* corrupt entry, skip */ }
+      } else {
+        await addDeck(name, raw !== undefined ? raw : exportText, id); // exportText: pre-migration key
+      }
     }
     if (saved.length){
       document.getElementById('managerPanel').classList.add('collapsed');
     }
+    document.getElementById('bookmarkletLink').href = buildBookmarklet();
+    document.getElementById('bookmarkletCode').value = buildBookmarklet();
     render();
   })();
+
+  document.getElementById('bookmarkletToggle').addEventListener('click', () => {
+    document.getElementById('bookmarkletPanel').classList.toggle('collapsed');
+  });
 
 })();
 </script>
