@@ -718,28 +718,42 @@
     return m ? m[1] : null;
   }
 
+  // Public CORS relays churn constantly (rate limits, shutdowns, key requirements).
+  // We try several independent ones in order and fall through on any failure.
   const PROXIES = [
-    (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-    (url) => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    (url) => `https://thingproxy.freeboard.io/fetch/${url}`,
+    { name: 'codetabs',   build: (url) => `https://api.codetabs.com/v1/proxy/?quest=${encodeURIComponent(url)}` },
+    { name: 'corslol',    build: (url) => `https://api.cors.lol/?url=${encodeURIComponent(url)}` },
+    { name: 'x2u',        build: (url) => `https://cors.x2u.in/${url}` },
+    { name: 'allorigins', build: (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}` },
   ];
+
+  async function fetchWithTimeout(url, ms){
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { cache: 'no-store', signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function fetchDeckJson(id){
     const target = `https://archidekt.com/api/decks/${id}/`;
-    let lastErr = null;
-    for (const makeUrl of PROXIES){
+    const attempts = [];
+    for (const proxy of PROXIES){
       try {
-        const resp = await fetch(makeUrl(target), { cache: 'no-store' });
+        const resp = await fetchWithTimeout(proxy.build(target), 12000);
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const text = await resp.text();
         const data = JSON.parse(text);
         if (data && (data.categories || data.cards || data.name)) return data;
-        throw new Error('Unexpected response shape');
+        throw new Error('unexpected response shape');
       } catch(e){
-        lastErr = e;
+        const msg = (e && e.name === 'AbortError') ? 'timed out' : ((e && e.message) || 'failed');
+        attempts.push(`${proxy.name}: ${msg}`);
       }
     }
-    throw lastErr || new Error('Every relay failed');
+    throw new Error(attempts.join(' · '));
   }
 
   async function loadDeck(id, url, forceRefresh){
