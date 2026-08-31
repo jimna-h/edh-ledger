@@ -385,20 +385,25 @@
     return undefined;
   }
 
-  // Turns a Scryfall-style "Legendary Creature — Rogue Insect" type line
-  // into { typeLine, types:['Creature'], subTypes:['Rogue','Insect'] }.
+  // Turns a Scryfall-style type line into { typeLine, types, subTypes }.
+  // Double-faced cards report as "Front type — Front sub // Back type — Back
+  // sub"; each face is parsed separately (splitting only on the em dash, not
+  // any hyphen) and their types/subtypes are unioned.
   function parseTypeLine(cardCore){
     const flat = pick(cardCore, ['type_line','typeLine','type']) || '';
     if (!flat) return { typeLine: '', types: [], subTypes: [] };
-    const parts = flat.split(/—|-/);
-    const left = (parts[0] || '').trim();
-    const right = (parts[1] || '').trim();
+    const faces = flat.split(/\s*\/\/\s*/).filter(Boolean);
     const SKIP = ['Legendary','Basic','Snow','Elite','World','Ongoing','Host'];
-    return {
-      typeLine: flat,
-      types: left.split(/\s+/).filter(w => w && !SKIP.includes(w)),
-      subTypes: right ? right.split(/\s+/).filter(Boolean) : []
-    };
+    const types = new Set();
+    const subTypes = new Set();
+    faces.forEach(face => {
+      const parts = face.split('—');
+      const left = (parts[0] || '').trim();
+      const right = (parts[1] || '').trim();
+      left.split(/\s+/).forEach(w => { if (w && !SKIP.includes(w)) types.add(w); });
+      if (right) right.split(/\s+/).forEach(w => { if (w) subTypes.add(w); });
+    });
+    return { typeLine: flat, types: Array.from(types), subTypes: Array.from(subTypes) };
   }
 
   function isExcludedCategoryName(cat){
@@ -499,6 +504,39 @@
     saveScryfallCache();
   }
 
+  async function scryfallNamedFuzzy(query){
+    try {
+      const resp = await fetch('https://api.scryfall.com/cards/named?fuzzy=' + encodeURIComponent(query));
+      if (!resp.ok) return null;
+      return await resp.json();
+    } catch(e){ return null; }
+  }
+
+  // Double-faced cards ("Front // Back") should match Scryfall's exact full
+  // name, but just in case, retry any that came back not-found using only
+  // the front face's name via fuzzy search, one at a time (rate-limit-safe).
+  async function retryMissingDoubleFaced(names){
+    const now = Date.now();
+    const missing = names.filter(n => {
+      const c = scryfallCache[n.toLowerCase()];
+      return c && c.notFound && n.includes('//');
+    });
+    for (const full of missing){
+      const front = full.split('//')[0].trim();
+      const card = await scryfallNamedFuzzy(front);
+      if (card && card.name){
+        const typeLine = card.type_line || (card.card_faces && card.card_faces[0] && card.card_faces[0].type_line) || '';
+        scryfallCache[full.toLowerCase()] = {
+          t: now, typeLine,
+          colorIdentity: card.color_identity || [],
+          manaValue: typeof card.cmc === 'number' ? card.cmc : 0,
+        };
+      }
+      await new Promise(r => setTimeout(r, 80));
+    }
+    if (missing.length) saveScryfallCache();
+  }
+
   async function addDeck(name, exportText, existingId){
     const rows = parseExportText(exportText);
     if (!rows.length){
@@ -511,6 +549,7 @@
 
     document.getElementById('managerStatus').textContent = `Looking up ${names.length} card${names.length===1?'':'s'} on Scryfall\u2026`;
     await enrichWithScryfall(names);
+    await retryMissingDoubleFaced(names);
     document.getElementById('managerStatus').textContent = '';
 
     const cards = included.map(g => {
